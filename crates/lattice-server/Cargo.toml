@@ -1,0 +1,33 @@
+[package]
+name = "lattice-server"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Фаза 2: минимальный rendezvous + relay. НЕ tokio — std-потоки, чтобы не тянуть
+# `windows` crate даже транзитивно (см. lib.rs «Почему std-потоки»). Только
+# кроссплатформенные крейты.
+[dependencies]
+lattice-proto = { path = "../lattice-proto", features = ["std"] }
+serde = { version = "1", default-features = false, features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+# default-features = false: дефолтные фичи env_logger тянут `anstream`
+# (терминальный цвет) → транзитивно `windows-sys` на Windows-хосте. Контракт
+# SPEC/AGENTS: сервер не тянет `windows` crate даже транзитивно, поэтому цвет
+# отключаем — серверу он не нужен.
+env_logger = { version = "0.11", default-features = false }
+thiserror = "2"
+
+[dependencies.clap]
+version = "4"
+default-features = false
+features = ["std", "derive", "help", "usage", "error-context"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lattice-server"
+path = "src/main.rs"

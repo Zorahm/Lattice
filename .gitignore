@@ -1,0 +1,29 @@
+# --- Rust / Cargo build artifacts (root workspace + gui/src-tauri) ---
+/target/
+**/target/
+
+# --- Node ---
+node_modules/
+
+# --- SvelteKit / Vite build output ---
+.svelte-kit/
+/gui/build/
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# --- Tauri generated ---
+/gui/src-tauri/gen/schemas/
+
+# --- Environment / secrets ---
+.env
+.env.*
+!.env.example
+
+# --- Editors / OS noise ---
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+
+# --- Claude Code local (machine-specific permissions) ---
+.claude/settings.local.json

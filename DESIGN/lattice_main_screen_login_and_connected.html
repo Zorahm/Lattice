@@ -1,0 +1,98 @@
+<h2 class="sr-only">Mockup of the Lattice client: a disconnected login screen with network name and password fields, and a connected screen showing the peer list.</h2>
+
+<div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.25rem; padding: 1rem 0;">
+
+  <div>
+    <p style="font-size: 13px; color: var(--color-text-tertiary); margin: 0 0 8px;">Экран 1 — вход</p>
+    <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 1.5rem; min-height: 400px; display: flex; flex-direction: column;">
+
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 2rem;">
+        <div style="display: flex; align-items: center; gap: 8px;">
+          <i class="ti ti-affiliate" style="font-size: 20px; color: var(--color-text-primary);" aria-hidden="true"></i>
+          <span style="font-weight: 500; font-size: 16px;">Lattice</span>
+        </div>
+        <i class="ti ti-settings" style="font-size: 18px; color: var(--color-text-tertiary);" aria-label="Настройки"></i>
+      </div>
+
+      <div style="flex: 1; display: flex; flex-direction: column; justify-content: center; gap: 14px;">
+        <div>
+          <label style="display:block; font-size: 13px; color: var(--color-text-secondary); margin-bottom: 5px;">Название сети</label>
+          <input type="text" value="my-home-lan" style="width: 100%; box-sizing: border-box;" />
+        </div>
+        <div>
+          <label style="display:block; font-size: 13px; color: var(--color-text-secondary); margin-bottom: 5px;">Пароль</label>
+          <div style="position: relative;">
+            <input type="text" value="••••••••••" style="width: 100%; box-sizing: border-box; padding-right: 36px;" />
+            <i class="ti ti-eye" style="position:absolute; right:10px; top:50%; transform:translateY(-50%); font-size:18px; color: var(--color-text-tertiary);" aria-label="Показать пароль"></i>
+          </div>
+        </div>
+        <p style="font-size: 12px; color: var(--color-text-tertiary); margin: 2px 0 0; line-height: 1.5;">Тот, кто введёт такие же название и пароль, попадёт в эту же сеть.</p>
+
+        <button style="width: 100%; margin-top: 8px; background: var(--color-text-primary); color: var(--color-background-primary); border: none; height: 40px; font-size: 15px; font-weight: 500;">Подключиться</button>
+
+        <label style="display:flex; align-items:center; gap:8px; font-size: 13px; color: var(--color-text-secondary); margin-top: 4px;">
+          <input type="checkbox" checked style="width:auto;" /> Запомнить
+        </label>
+      </div>
+
+    </div>
+  </div>
+
+  <div>
+    <p style="font-size: 13px; color: var(--color-text-tertiary); margin: 0 0 8px;">Экран 2 — в сети</p>
+    <div style="background: var(--color-background-secondary); border-radius: var(--border-radius-lg); padding: 1.5rem; min-height: 400px; display: flex; flex-direction: column;">
+
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem;">
+        <div>
+          <div style="display:flex; align-items:center; gap:8px;">
+            <span style="width:8px; height:8px; border-radius:50%; background: var(--color-text-success);"></span>
+            <span style="font-weight: 500; font-size: 15px;">my-home-lan</span>
+          </div>
+          <span style="font-size: 12px; color: var(--color-text-tertiary); margin-left: 16px;">вы — 10.66.0.1</span>
+        </div>
+        <i class="ti ti-settings" style="font-size: 18px; color: var(--color-text-tertiary);" aria-label="Настройки"></i>
+      </div>
+
+      <div style="flex: 1; display: flex; flex-direction: column; gap: 6px;">
+
+        <div style="display:flex; align-items:center; gap:10px; padding: 9px 10px; background: var(--color-background-primary); border-radius: var(--border-radius-md); border: 0.5px solid var(--color-border-tertiary);">
+          <span style="width:9px; height:9px; border-radius:50%; background:#1D9E75; flex-shrink:0;" title="напрямую"></span>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:14px; font-weight:500;">Leonid-PC</div>
+            <div style="font-size:12px; color: var(--color-text-tertiary);">10.66.0.2</div>
+          </div>
+          <span style="font-size:12px; color: var(--color-text-tertiary);">18 ms</span>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:10px; padding: 9px 10px; background: var(--color-background-primary); border-radius: var(--border-radius-md); border: 0.5px solid var(--color-border-tertiary);">
+          <span style="width:9px; height:9px; border-radius:50%; background:#EF9F27; flex-shrink:0;" title="через ретранслятор"></span>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:14px; font-weight:500;">Misha-laptop</div>
+            <div style="font-size:12px; color: var(--color-text-tertiary);">10.66.0.3</div>
+          </div>
+          <span style="font-size:12px; color: var(--color-text-tertiary);">64 ms</span>
+        </div>
+
+        <div style="display:flex; align-items:center; gap:10px; padding: 9px 10px; background: var(--color-background-primary); border-radius: var(--border-radius-md); border: 0.5px solid var(--color-border-tertiary); opacity:0.55;">
+          <span style="width:9px; height:9px; border-radius:50%; background:#888780; flex-shrink:0;" title="офлайн"></span>
+          <div style="flex:1; min-width:0;">
+            <div style="font-size:14px; font-weight:500;">Danil-desktop</div>
+            <div style="font-size:12px; color: var(--color-text-tertiary);">10.66.0.4</div>
+          </div>
+          <span style="font-size:12px; color: var(--color-text-tertiary);">офлайн</span>
+        </div>
+
+      </div>
+
+      <div style="display:flex; align-items:center; gap:14px; margin-top: 12px; padding-top: 10px; border-top: 0.5px solid var(--color-border-tertiary); font-size: 11px; color: var(--color-text-tertiary);">
+        <span style="display:flex; align-items:center; gap:5px;"><span style="width:8px;height:8px;border-radius:50%;background:#1D9E75;"></span>напрямую</span>
+        <span style="display:flex; align-items:center; gap:5px;"><span style="width:8px;height:8px;border-radius:50%;background:#EF9F27;"></span>ретранслятор</span>
+        <span style="display:flex; align-items:center; gap:5px;"><span style="width:8px;height:8px;border-radius:50%;background:#888780;"></span>офлайн</span>
+      </div>
+
+      <button style="width: 100%; margin-top: 12px; height: 36px; font-size: 14px;">Отключиться</button>
+
+    </div>
+  </div>
+
+</div>

@@ -1,0 +1,56 @@
+[package]
+name = "lattice-client"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Windows-only: tap-windows6 FFI + Win32 API. На других таргетах не собирается
+# осмысленно — см. cfg в tap.rs и cargo-cfg в main.rs.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Storage_FileSystem",
+    "Win32_System_IO",
+    "Win32_System_Threading",
+    "Win32_System_Registry",
+    "Win32_System_Console",
+    "Win32_Security",
+] }
+
+[dependencies]
+lattice-proto = { path = "../lattice-proto", features = ["std"] }
+chacha20poly1305 = "0.10"
+rand = { version = "0.8", default-features = false, features = ["std_rng", "std"] }
+thiserror = "2"
+hex = "0.4"
+# BLAKE3 для `network-id = BLAKE3(shared-key)` (Фаза 3). Не тянет `windows-sys`
+# (использует std::arch для SIMD, не платформенные крейты) — контракт
+# «клиент может иметь windows, но это не windows-крейт ради windows» соблюдён.
+blake3 = "1"
+log = "0.4"
+env_logger = "0.11"
+serde_json = "1"
+
+# Фаза 4: QUIC-транспорт как маскирующая обёртка (за trait Transport). Только в
+# КЛИЕНТЕ — сервер остаётся на std-потоках без windows-крейта (контракт SPEC).
+# Клиент Windows-only и уже тянет windows-sys, поэтому tokio/quinn здесь контракт
+# не нарушают. `ring` (не aws-lc-rs) как crypto-backend: чистый Rust+asm, не
+# требует CMake/NASM, собирается под x86_64-pc-windows-msvc.
+quinn = { version = "0.11", default-features = false, features = ["runtime-tokio", "rustls-ring", "log"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+tokio = { version = "1", default-features = false, features = ["rt", "rt-multi-thread", "net", "sync", "time", "macros"] }
+rcgen = { version = "0.13", default-features = false, features = ["ring", "pem"] }
+bytes = "1"
+
+[dependencies.clap]
+version = "4"
+default-features = false
+features = ["std", "derive", "help", "usage", "error-context"]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "lattice-client"
+path = "src/main.rs"

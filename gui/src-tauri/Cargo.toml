@@ -1,0 +1,35 @@
+# Собственный workspace: src-tauri лежит внутри дерева корневого workspace
+# Lattice, но это отдельный крейт GUI. Пустая таблица отвязывает его от корня
+# (path-зависимости на crates/* при этом продолжают работать).
+[workspace]
+
+[package]
+name = "gui"
+version = "0.1.0"
+description = "Lattice — десктоп-клиент (UI + Tauri-мост)"
+authors = ["Lattice"]
+edition = "2021"
+
+[lib]
+# Суффикс `_lib` нужен, чтобы имя библиотеки не конфликтовало с бинарём
+# (особенность Windows, см. https://github.com/rust-lang/cargo/issues/8519).
+name = "gui_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+log = "0.4"
+env_logger = "0.11"
+# KDF: пароль+сеть → 32-байтный ключ ровно здесь, в Rust. Фронт ключа не видит.
+blake3 = "1"
+
+# Готовый backend Lattice. UI только вызывает его публичный API — сетевую/крипто
+# логику не дублируем и не меняем.
+lattice-client = { path = "../../crates/lattice-client" }
+lattice-proto = { path = "../../crates/lattice-proto" }
