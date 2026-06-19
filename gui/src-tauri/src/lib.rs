@@ -7,6 +7,7 @@ mod conn;
 mod elevate;
 mod logbuf;
 mod settings;
+mod tap_setup;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -79,32 +80,35 @@ fn copy_log() -> String {
 /// установщик запускается с правами. Ищем любой .exe в ресурсах `tap/`.
 #[tauri::command]
 fn install_tap_driver(app: AppHandle) -> Result<(), String> {
-    let dir = app
-        .path()
-        .resource_dir()
-        .map_err(|e| e.to_string())?
-        .join("tap");
-    let installer = std::fs::read_dir(&dir)
-        .map_err(|_| "установщик драйвера не вшит в сборку".to_string())?
+    // 1. Если установщик вшит — запускаем тихо (ставит/чинит драйвер). Его может
+    //    не быть, если драйвер уже стоит и не хватает только адаптера — тогда
+    //    сразу переходим к созданию адаптера.
+    if let Some(installer) = bundled_installer(&app) {
+        log::info!("running TAP installer: {}", installer.display());
+        // `/S` — тихая установка NSIS-инсталлятора tap-windows.
+        let status = std::process::Command::new(&installer)
+            .arg("/S")
+            .status()
+            .map_err(|e| format!("не удалось запустить установщик: {e}"))?;
+        if !status.success() {
+            return Err(format!("установщик завершился с кодом {:?}", status.code()));
+        }
+    } else {
+        log::info!("bundled TAP installer not found; trying to create adapter only");
+    }
+
+    // 2. Гарантируем наличие адаптера (создаём через tapctl, если его нет).
+    tap_setup::ensure_adapter()
+}
+
+/// Найти вшитый в ресурсы установщик драйвера (любой `.exe` в `tap/`).
+fn bundled_installer(app: &AppHandle) -> Option<PathBuf> {
+    let dir = app.path().resource_dir().ok()?.join("tap");
+    std::fs::read_dir(dir)
+        .ok()?
         .filter_map(Result::ok)
         .map(|e| e.path())
-        .find(|p| {
-            p.extension()
-                .is_some_and(|x| x.eq_ignore_ascii_case("exe"))
-        })
-        .ok_or("установщик TAP-драйвера не найден в ресурсах")?;
-
-    log::info!("running TAP installer: {}", installer.display());
-    // `/S` — тихая установка NSIS-инсталлятора tap-windows.
-    let status = std::process::Command::new(&installer)
-        .arg("/S")
-        .status()
-        .map_err(|e| format!("не удалось запустить установщик: {e}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("установщик завершился с кодом {:?}", status.code()))
-    }
+        .find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe")))
 }
 
 // --- Трей ------------------------------------------------------------------
