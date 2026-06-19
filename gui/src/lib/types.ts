@@ -95,7 +95,7 @@ export const DEFAULT_SETTINGS: Settings = {
     mtu: 1380,
   },
   server: {
-    coordination: "178.218.116.1:51821",
+    coordination: "lattice.zorahm.ru:51821",
     stun: ["stun.l.google.com:19302", "stun.cloudflare.com:3478"],
   },
   connection: {

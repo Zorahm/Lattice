@@ -33,3 +33,12 @@ blake3 = "1"
 # логику не дублируем и не меняем.
 lattice-client = { path = "../../crates/lattice-client" }
 lattice-proto = { path = "../../crates/lattice-proto" }
+
+# Самоповышение прав через ShellExecute("runas"). Windows-only; в дереве
+# зависимостей windows-sys уже есть (tauri), поэтому версия унифицируется.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
+] }

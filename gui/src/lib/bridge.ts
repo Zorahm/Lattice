@@ -78,6 +78,13 @@ export async function saveSettings(s: Settings): Promise<void> {
   await c.invoke("save_settings", { settings: s });
 }
 
+/** Поставить вшитый TAP-драйвер (кнопка «Установить?» при его отсутствии). */
+export async function installTapDriver(): Promise<void> {
+  if (!hasTauri()) return;
+  const c = await core();
+  await c.invoke("install_tap_driver");
+}
+
 /** Вернуть текст лога для копирования (фронт сам кладёт в буфер обмена). */
 export async function getLog(): Promise<string> {
   if (!hasTauri()) return "lattice diagnostics log (mock)\n— нет Tauri-бэкенда —";

@@ -4,6 +4,7 @@
 //! Бизнес-логика (сеть/крипто) — в `lattice-client`; здесь оркестрация и UI-мост.
 
 mod conn;
+mod elevate;
 mod logbuf;
 mod settings;
 
@@ -73,6 +74,39 @@ fn copy_log() -> String {
     logbuf::snapshot()
 }
 
+/// Поставить TAP-драйвер из вшитого в приложение установщика (кнопка
+/// «Установить?» при отсутствии драйвера). Приложение уже elevated, поэтому
+/// установщик запускается с правами. Ищем любой .exe в ресурсах `tap/`.
+#[tauri::command]
+fn install_tap_driver(app: AppHandle) -> Result<(), String> {
+    let dir = app
+        .path()
+        .resource_dir()
+        .map_err(|e| e.to_string())?
+        .join("tap");
+    let installer = std::fs::read_dir(&dir)
+        .map_err(|_| "установщик драйвера не вшит в сборку".to_string())?
+        .filter_map(Result::ok)
+        .map(|e| e.path())
+        .find(|p| {
+            p.extension()
+                .is_some_and(|x| x.eq_ignore_ascii_case("exe"))
+        })
+        .ok_or("установщик TAP-драйвера не найден в ресурсах")?;
+
+    log::info!("running TAP installer: {}", installer.display());
+    // `/S` — тихая установка NSIS-инсталлятора tap-windows.
+    let status = std::process::Command::new(&installer)
+        .arg("/S")
+        .status()
+        .map_err(|e| format!("не удалось запустить установщик: {e}"))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("установщик завершился с кодом {:?}", status.code()))
+    }
+}
+
 // --- Трей ------------------------------------------------------------------
 
 fn show_main(app: &AppHandle) {
@@ -120,6 +154,12 @@ fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 pub fn run() {
     logbuf::init();
 
+    // Поднять права ДО окна: без админа адаптер не настроить. Если запустили
+    // перезапуск с UAC — текущий (непривилегированный) процесс выходит.
+    if !elevate::ensure_admin() {
+        return;
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
@@ -147,7 +187,8 @@ pub fn run() {
             disconnect,
             get_settings,
             save_settings,
-            copy_log
+            copy_log,
+            install_tap_driver
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

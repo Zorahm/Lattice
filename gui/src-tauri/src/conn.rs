@@ -139,12 +139,41 @@ fn resolve_stun(specs: &[String]) -> Vec<SocketAddr> {
     out
 }
 
-fn generate_peer_id() -> String {
-    let host = std::env::var("COMPUTERNAME")
+/// Короткое имя машины (без домена) — основа peer-id и seed для авто-IP.
+fn hostname() -> String {
+    let raw = std::env::var("COMPUTERNAME")
         .or_else(|_| std::env::var("HOSTNAME"))
         .unwrap_or_else(|_| "peer".to_string());
-    let host = host.split('.').next().unwrap_or("peer");
+    raw.split('.').next().unwrap_or("peer").to_string()
+}
+
+fn generate_peer_id(host: &str) -> String {
     format!("{host}-{}", std::process::id())
+}
+
+/// Детерминированный 32-битный хэш строки (BLAKE3, первые 4 байта).
+fn hash32(s: &str) -> u32 {
+    let digest = blake3::hash(s.as_bytes());
+    let b = digest.as_bytes();
+    u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+}
+
+/// Автоматический overlay-IP из подсети. Хост-октет выводится из `seed` (имя
+/// машины) — стабильно между перезапусками; `attempt` сдвигает кандидата при
+/// коллизии. Исключаем адрес сети и broadcast. Поддерживает любой префикс /1../30
+/// (дефолт — /24 → 253 адреса).
+fn auto_overlay_ip(subnet: &str, seed: &str, attempt: u32) -> Result<(Ipv4Addr, u8), String> {
+    let (net, prefix) = parse_cidr(subnet)?;
+    if prefix >= 31 {
+        // /31 и /32 — полезных хостов нет, отдаём сам адрес.
+        return Ok((net, prefix));
+    }
+    let host_bits = 32 - u32::from(prefix);
+    let span: u32 = 1 << host_bits; // напр. 256 для /24
+    let usable = span - 2; // минус адрес сети и broadcast
+    let base = u32::from(net) & (u32::MAX << host_bits); // адрес сети
+    let idx = 1 + (hash32(seed).wrapping_add(attempt) % usable); // 1..=usable
+    Ok((Ipv4Addr::from(base + idx), prefix))
 }
 
 // --- Жизненный цикл подключения --------------------------------------------
@@ -180,10 +209,22 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
         return;
     }
 
-    // 2. Параметры из настроек.
-    let (ip, prefix) = match parse_cidr(&settings.network.overlay_ip) {
-        Ok(v) => v,
-        Err(detail) => return emit_error(app, network, "bad_input", detail),
+    // 2. Параметры из настроек. Overlay-IP в режиме «Автоматически» назначаем
+    //    сами из подсети по имени машины (стабильно между перезапусками);
+    //    коллизию с другим пиром разрулим ретраем ниже — пользователь только
+    //    вводит сеть+пароль. «Вручную» — берём заданный IP/PREFIX как есть.
+    let host_seed = hostname();
+    let auto_ip = settings.network.ip_assign != "manual";
+    let (ip, prefix) = if auto_ip {
+        match auto_overlay_ip(&settings.network.subnet, &host_seed, 0) {
+            Ok(v) => v,
+            Err(detail) => return emit_error(app, network, "bad_input", detail),
+        }
+    } else {
+        match parse_cidr(&settings.network.overlay_ip) {
+            Ok(v) => v,
+            Err(detail) => return emit_error(app, network, "bad_input", detail),
+        }
     };
     let key = derive_key(network, password);
     let crypto = Crypto::new(&key);
@@ -191,7 +232,7 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
         Ok(id) => id,
         Err(detail) => return emit_error(app, network, "unknown", detail),
     };
-    let self_overlay = ip.to_string();
+    let mut self_overlay = ip.to_string();
 
     // 3. Открыть TAP-адаптер.
     let tap = match TapDevice::open() {
@@ -237,10 +278,10 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
         );
     }
 
-    let params = MeshParams {
+    let mut params = MeshParams {
         rendezvous: with_default_port(&settings.server.coordination),
         network_id: net_id,
-        peer_id: PeerId::new(generate_peer_id()),
+        peer_id: PeerId::new(generate_peer_id(&host_seed)),
         overlay_ip: OverlayIp::new(self_overlay.clone()),
         stun_servers,
         connect_timeout: Duration::from_secs(10),
@@ -255,6 +296,7 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
     //    но с эмиссией событий между шагами.
     let mut roster: BTreeMap<String, PeerView> = BTreeMap::new();
     let mut ever_connected = false;
+    let mut attempt: u32 = 0;
 
     loop {
         if shutdown.load(Ordering::Acquire) {
@@ -285,6 +327,34 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
                 }
             }
             Err(MeshError::Aborted) => break,
+            // Авто-режим: наш overlay-IP уже занят в сети — берём следующий из
+            // подсети и переназначаем адаптер. Прозрачно для пользователя.
+            Err(MeshError::Rejected(msg))
+                if auto_ip && !ever_connected && msg.contains("already taken") && attempt < 32 =>
+            {
+                attempt += 1;
+                match auto_overlay_ip(&settings.network.subnet, &host_seed, attempt) {
+                    Ok((nip, npfx)) => {
+                        if let Err(e) = netcfg::configure_interface(
+                            &tap.info.name,
+                            nip,
+                            npfx,
+                            settings.network.mtu,
+                        ) {
+                            return emit_error(
+                                app,
+                                network,
+                                "unknown",
+                                format!("настройка адаптера: {e}"),
+                            );
+                        }
+                        self_overlay = nip.to_string();
+                        params.overlay_ip = OverlayIp::new(self_overlay.clone());
+                        log::info!("auto overlay-ip занят, пробую {self_overlay}");
+                    }
+                    Err(detail) => return emit_error(app, network, "bad_input", detail),
+                }
+            }
             Err(e) => {
                 let detail = e.to_string();
                 if ever_connected {

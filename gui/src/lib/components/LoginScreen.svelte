@@ -2,9 +2,24 @@
   import Icon from "./Icon.svelte";
   import { t, errorMessage } from "../i18n";
   import { status, loginForm, openSettings } from "../stores";
-  import { connect, persistLogin } from "../bridge";
+  import { connect, persistLogin, installTapDriver } from "../bridge";
 
   let showPassword = $state(false);
+  let installing = $state(false);
+
+  const noDriver = $derived($status.phase === "error" && $status.error?.kind === "no_tap_driver");
+
+  async function installDriver() {
+    installing = true;
+    try {
+      await installTapDriver();
+      await onConnect(); // драйвер поставлен — сразу пробуем подключиться
+    } catch {
+      /* ошибка останется на экране через событие status */
+    } finally {
+      installing = false;
+    }
+  }
 
   const busy = $derived($status.phase === "connecting");
   const errored = $derived($status.phase === "error");
@@ -74,6 +89,11 @@
       <div class="error" role="alert">
         <strong>{m.title}.</strong>
         {m.action}
+        {#if noDriver}
+          <button class="install" disabled={installing} onclick={installDriver}>
+            {installing ? "Установка…" : "Установить?"}
+          </button>
+        {/if}
       </div>
     {/if}
 
@@ -181,5 +201,12 @@
     border: 1px solid color-mix(in srgb, var(--color-danger) 40%, transparent);
     border-radius: var(--border-radius-md);
     padding: 10px 12px;
+  }
+  .install {
+    display: block;
+    margin-top: 8px;
+    height: 32px;
+    padding: 0 14px;
+    font-size: 13px;
   }
 </style>

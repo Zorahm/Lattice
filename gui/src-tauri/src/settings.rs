@@ -57,7 +57,7 @@ impl Default for Settings {
                 mtu: 1380,
             },
             server: ServerSettings {
-                coordination: "178.218.116.1:51821".into(),
+                coordination: "lattice.zorahm.ru:51821".into(),
                 stun: vec![
                     "stun.l.google.com:19302".into(),
                     "stun.cloudflare.com:3478".into(),
