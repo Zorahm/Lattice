@@ -30,7 +30,6 @@ use crate::crypto::Crypto;
 use crate::dynamic::Established;
 use crate::mesh::MeshSignalRecv;
 use crate::mesh::MeshSignaling;
-use crate::mesh::lan_target;
 use crate::punch::{self, CtrlKind};
 use crate::session::net_to_tap;
 use crate::transport::obfs::JitterPolicy;
@@ -327,9 +326,24 @@ fn control_watch(
                 // именно он раньше вызывал флап (storm переподключений).
                 // Relay: relay сам пересылает всем — ничего не делаем.
                 if matches!(established, Established::Direct { .. }) {
-                    match direct_target(&info, self_public_ip) {
-                        Some(addr) => upsert_direct_peer(peers, peer_ids, &info, addr),
-                        None => log::warn!(
+                    if peer_shares_our_ip(&info, self_public_ip) {
+                        // Пир за тем же публичным IP: нужно переоценить транспорт.
+                        // Переустанавливаемся — `establish` попробует его LAN-адрес,
+                        // а при неудаче punch'а (AP-isolation в LAN) уйдёт в relay.
+                        // Сходится без шторма: после перехода обоих в relay этот
+                        // обработчик в relay-режиме уже no-op.
+                        log::info!(
+                            "mesh: peer {} за тем же NAT — переустановка (LAN-direct/relay)",
+                            info.peer_id.as_str()
+                        );
+                        signal_end(reason, stop, MeshSessionEnd::LinkDead);
+                        return;
+                    }
+                    // Другой публичный IP (cone-NAT): инкрементально добавляем по
+                    // srflx, без re-establish — встречный трафик пробьёт путь.
+                    match info.srflx.parse::<SocketAddr>() {
+                        Ok(addr) => upsert_direct_peer(peers, peer_ids, &info, addr),
+                        Err(_) => log::warn!(
                             "mesh: peer {} has bad srflx '{}'; skipped",
                             info.peer_id.as_str(),
                             info.srflx
@@ -348,9 +362,17 @@ fn control_watch(
             }
             MeshSignalRecv::Message(MeshServerMessage::PeerUpdated(info)) => {
                 if matches!(established, Established::Direct { .. }) {
-                    match direct_target(&info, self_public_ip) {
-                        Some(addr) => upsert_direct_peer(peers, peer_ids, &info, addr),
-                        None => log::warn!(
+                    if peer_shares_our_ip(&info, self_public_ip) {
+                        log::info!(
+                            "mesh: peer {} (update) за тем же NAT — переустановка",
+                            info.peer_id.as_str()
+                        );
+                        signal_end(reason, stop, MeshSessionEnd::LinkDead);
+                        return;
+                    }
+                    match info.srflx.parse::<SocketAddr>() {
+                        Ok(addr) => upsert_direct_peer(peers, peer_ids, &info, addr),
+                        Err(_) => log::warn!(
                             "mesh: peer {} has bad srflx '{}'; skipped",
                             info.peer_id.as_str(),
                             info.srflx
@@ -386,11 +408,15 @@ fn control_watch(
     }
 }
 
-/// Адрес для прямого коннекта к пиру: LAN-адрес, если он за тем же NAT, иначе
-/// публичный srflx. `None` — оба адреса не разобрались (битый пир). Сравнение
-/// NAT — по публичному IP (см. `mesh::lan_target`).
-fn direct_target(info: &PeerInfo, self_ip: Option<IpAddr>) -> Option<SocketAddr> {
-    lan_target(info, self_ip).or_else(|| info.srflx.parse().ok())
+/// Сидит ли пир за тем же публичным IP, что и мы. Сравнение по IP, не по порту:
+/// один внешний IP = один NAT. `None`/битый srflx → `false`. Для такого пира
+/// прямой путь по публичному srflx — hairpin (роутер обычно не умеет), поэтому
+/// решение «LAN-direct или relay» переоценивается переустановкой (`establish`).
+fn peer_shares_our_ip(info: &PeerInfo, self_ip: Option<IpAddr>) -> bool {
+    match (self_ip, info.srflx.parse::<SocketAddr>()) {
+        (Some(ip), Ok(addr)) => addr.ip() == ip,
+        _ => false,
+    }
 }
 
 /// Добавить (или обновить endpoint) direct-пира в broadcast-список и реестр id.
