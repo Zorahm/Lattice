@@ -24,8 +24,11 @@ use windows_sys::Win32::System::Registry::{
 /// адаптера для `\\.\Global\{GUID}.tap`; `Name` (`REG_SZ`) = connection name,
 /// который понимает `netsh`. `ComponentId` (`REG_SZ`) = `tap0901` для `tap-windows6`.
 #[cfg(windows)]
+// ВНИМАНИЕ: класс сетевых АДАПТЕРОВ (Net) — суффикс GUID `bfc1`. `bfc4` — это
+// класс сетевых ПРОТОКОЛОВ (NetTrans), там адаптеров нет: со старым `bfc4`
+// `find_tap_adapter` никогда не находил TAP (баг, проявлялся на всех машинах).
 pub(crate) const NET_CLASS_KEY: &str =
-    "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc4-08002be10318}";
+    "SYSTEM\\CurrentControlSet\\Control\\Class\\{4d36e972-e325-11ce-bfc1-08002be10318}";
 
 /// `ComponentId` `tap-windows6`. OpenVPN-драйвер этой ветки регистрируется
 /// именно так; альтернативные сборки иногда тоже объявляют `tap0901`.
@@ -128,7 +131,14 @@ fn probe_subkey(parent: HKEY, sub_name: &str) -> Option<TapAdapterInfo> {
             return None;
         }
         let guid = query_reg_string(sub_key, "NetCfgInstanceId").unwrap_or_default();
-        let name = query_reg_string(sub_key, "Name")
+        // Имя для netsh — это connection name из ветки Network\...\Connection\Name
+        // (напр. «Подключение по локальной сети»). В ключе драйвера (Class) поле
+        // `Name` часто ПУСТОЕ — тогда netsh получал бы `name=` и падал с
+        // «Синтаксическая ошибка». Берём по приоритету: connection name → Class
+        // Name → запасное `Lattice-{guid}`; пустые строки отбрасываем.
+        let name = connection_name(&guid)
+            .filter(|n| !n.is_empty())
+            .or_else(|| query_reg_string(sub_key, "Name").filter(|n| !n.is_empty()))
             .unwrap_or_else(|| format!("Lattice-{guid}"));
         Some(TapAdapterInfo { guid, name })
     })();
@@ -136,6 +146,34 @@ fn probe_subkey(parent: HKEY, sub_name: &str) -> Option<TapAdapterInfo> {
     // SAFETY: закрываем дескриптор сабкея.
     unsafe { RegCloseKey(sub_key) };
     result
+}
+
+/// Прочитать «connection name» адаптера (то, что понимает `netsh`) из
+/// `...\Control\Network\{class}\{GUID}\Connection`, value `Name`. Это
+/// авторитетный источник имени подключения; в ключе драйвера (Class) оно может
+/// быть пустым. `None`, если ключа/значения нет.
+#[cfg(windows)]
+fn connection_name(guid: &str) -> Option<String> {
+    if guid.is_empty() {
+        return None;
+    }
+    // Тот же класс Net (bfc1), что и в `NET_CLASS_KEY`, но ветка Network.
+    let path = format!(
+        "SYSTEM\\CurrentControlSet\\Control\\Network\\\
+         {{4d36e972-e325-11ce-bfc1-08002be10318}}\\{guid}\\Connection"
+    );
+    let path_w = encode_wide(&path);
+    let mut key: HKEY = std::ptr::null_mut();
+    // SAFETY: RegOpenKeyExW открывает Connection-ключ; валиден до RegCloseKey.
+    let status =
+        unsafe { RegOpenKeyExW(HKEY_LOCAL_MACHINE, path_w.as_ptr(), 0, KEY_READ, &mut key) };
+    if status != 0 {
+        return None;
+    }
+    let name = query_reg_string(key, "Name");
+    // SAFETY: закрываем дескриптор Connection-ключа.
+    unsafe { RegCloseKey(key) };
+    name
 }
 
 /// Прочитать REG_SZ-значение `name` из открытого ключа `key`. `None` если

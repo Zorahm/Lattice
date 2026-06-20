@@ -37,6 +37,7 @@ fn connect(
     state: State<'_, AppState>,
     network: String,
     password: String,
+    display_name: Option<String>,
 ) -> Result<(), String> {
     if network.trim().is_empty() || password.is_empty() {
         return Err("empty network or password".into());
@@ -46,7 +47,13 @@ fn connect(
     if let Some(old) = guard.take() {
         old.store(true, Ordering::Release); // остановить предыдущее подключение.
     }
-    *guard = Some(conn::spawn(app, settings, network, password));
+    *guard = Some(conn::spawn(
+        app,
+        settings,
+        network,
+        password,
+        display_name.unwrap_or_default(),
+    ));
     Ok(())
 }
 
@@ -66,7 +73,15 @@ fn get_settings(state: State<'_, AppState>) -> Settings {
 
 #[tauri::command]
 fn save_settings(state: State<'_, AppState>, settings: Settings) -> Result<(), String> {
-    settings.save(&state.settings_path)
+    let r = settings.save(&state.settings_path);
+    match &r {
+        Ok(()) => log::info!("settings saved to {}", state.settings_path.display()),
+        Err(e) => log::error!(
+            "settings save FAILED ({}): {e}",
+            state.settings_path.display()
+        ),
+    }
+    r
 }
 
 /// Снимок последних строк лога — для кнопки «Скопировать лог» в Диагностике.
@@ -109,6 +124,27 @@ fn bundled_installer(app: &AppHandle) -> Option<PathBuf> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .find(|p| p.extension().is_some_and(|x| x.eq_ignore_ascii_case("exe")))
+}
+
+/// Абсолютный путь к settings.json. Никогда не возвращаем ОТНОСИТЕЛЬНЫЙ путь:
+/// у elevated-процесса рабочая папка = System32, и относительная запись падает
+/// с access-denied (был баг «настройки не сохраняются»). Слои фолбэка все дают
+/// абсолютный путь.
+fn resolve_settings_path(app: &AppHandle) -> PathBuf {
+    if let Ok(dir) = app.path().app_config_dir() {
+        return dir.join("settings.json");
+    }
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        return PathBuf::from(appdata)
+            .join("com.lattice.gui")
+            .join("settings.json");
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            return dir.join("lattice-settings.json");
+        }
+    }
+    PathBuf::from("lattice-settings.json")
 }
 
 // --- Трей ------------------------------------------------------------------
@@ -167,11 +203,15 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .setup(|app| {
-            let path = app
-                .path()
-                .app_config_dir()
-                .map(|d| d.join("settings.json"))
-                .unwrap_or_else(|_| PathBuf::from("lattice-settings.json"));
+            let path = resolve_settings_path(app.handle());
+            // Каталог создаём сразу — чтобы запись не падала молча, и логируем
+            // путь (виден в «Скопировать лог»).
+            if let Some(dir) = path.parent() {
+                if let Err(e) = std::fs::create_dir_all(dir) {
+                    log::warn!("settings: cannot create dir {}: {e}", dir.display());
+                }
+            }
+            log::info!("settings file: {}", path.display());
             app.manage(AppState {
                 settings_path: path,
                 conn: Mutex::new(None),

@@ -6,11 +6,26 @@
   import { saveSettings, getLog } from "../bridge";
   import type { Settings } from "../types";
 
-  // Локальная редактируемая копия — применяется по «Сохранить».
+  // Локальная редактируемая копия.
   let draft = $state<Settings>(structuredClone($settings));
   let advancedOpen = $state(false);
   let savedFlash = $state(false);
   let copied = $state(false);
+
+  // Авто-сохранение: любое изменение персистится (с дебаунсом), чтобы правки не
+  // терялись, даже если не нажать «Сохранить». Первый прогон на маунте пишет
+  // текущие (загруженные) значения — заодно гарантирует, что файл создаётся.
+  let saveTimer: ReturnType<typeof setTimeout> | undefined;
+  let firstRun = true;
+  $effect(() => {
+    const snapshot = JSON.stringify(draft); // реактивно читаем все поля
+    clearTimeout(saveTimer);
+    const delay = firstRun ? 0 : 400;
+    firstRun = false;
+    saveTimer = setTimeout(() => {
+      void saveSettings(JSON.parse(snapshot) as Settings);
+    }, delay);
+  });
 
   function back() {
     screen.set($settingsReturn);

@@ -5,7 +5,7 @@
 // работает лёгкий mock, чтобы UI можно было разрабатывать и смотреть. В сборке
 // Tauri используется настоящий backend.
 
-import { peers, status, diagnostics, settings, loginForm } from "./stores";
+import { peers, status, diagnostics, settings } from "./stores";
 import {
   DEFAULT_SETTINGS,
   type ConnectionStatus,
@@ -40,6 +40,8 @@ async function events(): Promise<TauriEvent> {
 export interface ConnectArgs {
   network: string;
   password: string;
+  /** Своё отображаемое имя (видно всем в комнате); пустое = hostname. */
+  displayName?: string;
 }
 
 export async function connect(args: ConnectArgs): Promise<void> {
@@ -51,7 +53,11 @@ export async function connect(args: ConnectArgs): Promise<void> {
   status.update((s) => ({ ...s, phase: "connecting", network: args.network }));
   const c = await core();
   // Пароль уходит в backend как есть; KDF→ключ→network-id считает Rust.
-  await c.invoke("connect", { network: args.network, password: args.password });
+  await c.invoke("connect", {
+    network: args.network,
+    password: args.password,
+    displayName: args.displayName ?? "",
+  });
 }
 
 export async function disconnect(): Promise<void> {
@@ -128,11 +134,12 @@ function mockConnect(args: ConnectArgs): void {
       phase: "connected",
       network: args.network,
       overlayIp: "10.66.0.1",
+      selfName: args.displayName?.trim() || "DESKTOP-2SJCIUB",
     });
     peers.set([
-      { id: "p1", name: "Leonid-PC", overlayIp: "10.66.0.2", link: "p2p", pingMs: 18 },
-      { id: "p2", name: "Misha-laptop", overlayIp: "10.66.0.3", link: "relay", pingMs: 64 },
-      { id: "p3", name: "Danil-desktop", overlayIp: "10.66.0.4", link: "offline" },
+      { id: "p1", name: "Leonid-PC-1024", overlayIp: "10.66.0.2", link: "p2p", pingMs: 18 },
+      { id: "p2", name: "Misha-laptop-7780", overlayIp: "10.66.0.3", link: "relay", pingMs: 64 },
+      { id: "p3", name: "Danil-desktop-44084", overlayIp: "10.66.0.4", link: "offline" },
     ]);
     diagnostics.set({ natType: "Full-cone", externalEndpoint: "85.x.x.x:51820" });
   }, 700);
@@ -142,31 +149,4 @@ function mockDisconnect(): void {
   if (mockTimer) clearTimeout(mockTimer);
   peers.set([]);
   status.set({ phase: "disconnected" });
-}
-
-// Восстановить сохранённые поля входа (чекбокс «Запомнить»).
-export function restoreLogin(): void {
-  if (typeof window === "undefined") return;
-  try {
-    const raw = window.localStorage.getItem("lattice.login");
-    if (raw) {
-      const v = JSON.parse(raw);
-      loginForm.set({
-        network: v.network ?? "",
-        password: v.password ?? "",
-        remember: true,
-      });
-    }
-  } catch {
-    /* игнорируем битый кеш */
-  }
-}
-
-export function persistLogin(network: string, password: string, remember: boolean): void {
-  if (typeof window === "undefined") return;
-  if (remember) {
-    window.localStorage.setItem("lattice.login", JSON.stringify({ network, password }));
-  } else {
-    window.localStorage.removeItem("lattice.login");
-  }
 }

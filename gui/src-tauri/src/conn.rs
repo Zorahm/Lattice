@@ -12,7 +12,7 @@
 use std::collections::BTreeMap;
 use std::net::{Ipv4Addr, SocketAddr, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use serde::Serialize;
@@ -49,6 +49,8 @@ struct StatusPayload {
     phase: String,
     network: Option<String>,
     overlay_ip: Option<String>,
+    /// Имя этого узла (hostname) — для карточки «себя» в списке.
+    self_name: Option<String>,
     error: Option<ErrPayload>,
 }
 
@@ -69,13 +71,20 @@ struct DiagPayload {
     external_endpoint: Option<String>,
 }
 
-fn emit_status(app: &AppHandle, phase: &str, network: &str, overlay: Option<&str>) {
+fn emit_status(
+    app: &AppHandle,
+    phase: &str,
+    network: &str,
+    overlay: Option<&str>,
+    self_name: Option<&str>,
+) {
     let _ = app.emit(
         "status",
         StatusPayload {
             phase: phase.into(),
             network: Some(network.into()),
             overlay_ip: overlay.map(Into::into),
+            self_name: self_name.map(Into::into),
             error: None,
         },
     );
@@ -89,6 +98,7 @@ fn emit_error(app: &AppHandle, network: &str, kind: &str, detail: String) {
             phase: "error".into(),
             network: Some(network.into()),
             overlay_ip: None,
+            self_name: None,
             error: Some(ErrPayload {
                 kind: kind.into(),
                 detail: Some(detail),
@@ -185,18 +195,26 @@ pub fn spawn(
     settings: Settings,
     network: String,
     password: String,
+    display_name: String,
 ) -> Arc<AtomicBool> {
     let shutdown = Arc::new(AtomicBool::new(false));
     let flag = Arc::clone(&shutdown);
     std::thread::Builder::new()
         .name("lattice-conn".into())
-        .spawn(move || run(&app, &settings, &network, &password, &flag))
+        .spawn(move || run(&app, &settings, &network, &password, &display_name, &flag))
         .expect("spawn connection thread");
     shutdown
 }
 
-fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shutdown: &AtomicBool) {
-    emit_status(app, "connecting", network, None);
+fn run(
+    app: &AppHandle,
+    settings: &Settings,
+    network: &str,
+    password: &str,
+    display_name: &str,
+    shutdown: &AtomicBool,
+) {
+    emit_status(app, "connecting", network, None, None);
 
     // 1. Права администратора (нужны для адаптера/netsh).
     if let Err(e) = netcfg::check_admin() {
@@ -214,6 +232,13 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
     //    коллизию с другим пиром разрулим ретраем ниже — пользователь только
     //    вводит сеть+пароль. «Вручную» — берём заданный IP/PREFIX как есть.
     let host_seed = hostname();
+    // Отображаемое имя узла: пользовательское из GUI (видно всем участникам как
+    // часть peer-id), иначе hostname. Авто-IP по-прежнему сеется hostname'ом,
+    // чтобы overlay-IP не «прыгал» при переименовании.
+    let peer_name = {
+        let n = display_name.trim();
+        if n.is_empty() { host_seed.clone() } else { n.to_string() }
+    };
     let auto_ip = settings.network.ip_assign != "manual";
     let (ip, prefix) = if auto_ip {
         match auto_overlay_ip(&settings.network.subnet, &host_seed, 0) {
@@ -281,7 +306,7 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
     let mut params = MeshParams {
         rendezvous: with_default_port(&settings.server.coordination),
         network_id: net_id,
-        peer_id: PeerId::new(generate_peer_id(&host_seed)),
+        peer_id: PeerId::new(generate_peer_id(&peer_name)),
         overlay_ip: OverlayIp::new(self_overlay.clone()),
         stun_servers,
         connect_timeout: Duration::from_secs(10),
@@ -294,7 +319,10 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
 
     // 7. Внешний цикл: establish → session → reconnect. Реплика run_mesh,
     //    но с эмиссией событий между шагами.
-    let mut roster: BTreeMap<String, PeerView> = BTreeMap::new();
+    // Разделяемый между внешним циклом и session-поллером: presence теперь
+    // меняется инкрементально внутри сессии (без re-establish), поэтому roster
+    // нужно опрашивать на ходу, а не только между сессиями.
+    let roster: Arc<Mutex<BTreeMap<String, PeerView>>> = Arc::new(Mutex::new(BTreeMap::new()));
     let mut ever_connected = false;
     let mut attempt: u32 = 0;
 
@@ -305,24 +333,49 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
         match mesh::establish(&transport, &crypto, &params, shutdown) {
             Ok(est) => {
                 ever_connected = true;
-                update_roster(&mut roster, &est);
-                emit_status(app, "connected", network, Some(&self_overlay));
-                emit_peers(app, &roster);
+                if let Ok(mut r) = roster.lock() {
+                    update_roster(&mut r, &est);
+                    emit_peers(app, &r);
+                }
+                emit_status(app, "connected", network, Some(&self_overlay), Some(&peer_name));
 
-                let end = run_session(&tap, &crypto, &transport, &est, heartbeat, shutdown);
+                // Поллер пиров на время сессии: presence-изменения теперь живут
+                // внутри сессии (см. mesh_session::control_watch), а не рвут её,
+                // поэтому roster обновляем периодически из est.peer_ids.
+                let poll_stop = AtomicBool::new(false);
+                let end = std::thread::scope(|s| {
+                    s.spawn(|| {
+                        while !poll_stop.load(Ordering::Acquire) {
+                            if let Ok(mut r) = roster.lock() {
+                                update_roster(&mut r, &est);
+                                emit_peers(app, &r);
+                            }
+                            // Дробим сон, чтобы быстро выйти по завершении сессии.
+                            for _ in 0..10 {
+                                if poll_stop.load(Ordering::Acquire) {
+                                    break;
+                                }
+                                std::thread::sleep(Duration::from_millis(200));
+                            }
+                        }
+                    });
+                    let end = run_session(&tap, &crypto, &transport, &est, heartbeat, shutdown);
+                    poll_stop.store(true, Ordering::Release);
+                    end
+                });
                 let _ = est
                     .signaling
                     .send(&lattice_proto::mesh::MeshClientMessage::Bye);
                 match end {
                     MeshSessionEnd::Shutdown => break,
                     MeshSessionEnd::Kicked | MeshSessionEnd::NetworkClosed => {
-                        emit_status(app, "disconnected", network, None);
+                        emit_status(app, "disconnected", network, None, None);
                         let _ = app.emit("peers", Vec::<PeerView>::new());
                         return;
                     }
                     MeshSessionEnd::LinkDead | MeshSessionEnd::ControlLost => {
                         // Тихий авто-ретрай (без модалок на каждый разрыв).
-                        emit_status(app, "reconnecting", network, Some(&self_overlay));
+                        emit_status(app, "reconnecting", network, Some(&self_overlay), Some(&peer_name));
                     }
                 }
             }
@@ -358,7 +411,7 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
             Err(e) => {
                 let detail = e.to_string();
                 if ever_connected {
-                    emit_status(app, "reconnecting", network, Some(&self_overlay));
+                    emit_status(app, "reconnecting", network, Some(&self_overlay), Some(&peer_name));
                     if wait_or_stop(shutdown, Duration::from_secs(3)) {
                         break;
                     }
@@ -371,7 +424,7 @@ fn run(app: &AppHandle, settings: &Settings, network: &str, password: &str, shut
         }
     }
 
-    emit_status(app, "disconnected", network, None);
+    emit_status(app, "disconnected", network, None, None);
     let _ = app.emit("peers", Vec::<PeerView>::new());
     drop(tap); // опустить линк адаптера.
     log::info!("connection thread finished");
@@ -393,6 +446,8 @@ fn run_session(
                 crypto,
                 transport,
                 peers: &est.peers,
+                peer_ids: &est.peer_ids,
+                self_public_ip: est.self_public_ip,
                 signaling: &est.signaling,
                 established: &est.established,
                 heartbeat_interval: heartbeat,
@@ -416,6 +471,8 @@ fn run_session(
                 crypto,
                 transport: &relay,
                 peers: &est.peers,
+                peer_ids: &est.peer_ids,
+                self_public_ip: est.self_public_ip,
                 signaling: &est.signaling,
                 established: &est.established,
                 heartbeat_interval: heartbeat,

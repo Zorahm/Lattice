@@ -1,0 +1,21 @@
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#27b288"/>
+      <stop offset="1" stop-color="#147a5a"/>
+    </linearGradient>
+  </defs>
+
+  <!-- скруглённый квадрат-подложка, углы прозрачные -->
+  <rect x="0" y="0" width="1024" height="1024" rx="232" ry="232" fill="url(#bg)"/>
+
+  <!-- меш из трёх узлов: верх, низ-лево, низ-право -->
+  <g stroke="#F4F3EE" stroke-width="44" stroke-linecap="round" fill="#F4F3EE">
+    <line x1="512" y1="320" x2="300" y2="712"/>
+    <line x1="512" y1="320" x2="724" y2="712"/>
+    <line x1="300" y1="712" x2="724" y2="712"/>
+    <circle cx="512" cy="320" r="74"/>
+    <circle cx="300" cy="712" r="74"/>
+    <circle cx="724" cy="712" r="74"/>
+  </g>
+</svg>

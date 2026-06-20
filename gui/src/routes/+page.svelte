@@ -1,32 +1,17 @@
 <script lang="ts">
   import "../lib/styles/app.css";
   import { onMount } from "svelte";
-  import LoginScreen from "../lib/components/LoginScreen.svelte";
-  import ConnectedScreen from "../lib/components/ConnectedScreen.svelte";
+  import RoomsScreen from "../lib/components/RoomsScreen.svelte";
   import SettingsScreen from "../lib/components/SettingsScreen.svelte";
   import Icon from "../lib/components/Icon.svelte";
-  import { screen, status } from "../lib/stores";
+  import { screen } from "../lib/stores";
   import { initTheme, toggleTheme, theme } from "../lib/theme";
-  import {
-    startEventBridge,
-    stopEventBridge,
-    loadSettings,
-    restoreLogin,
-  } from "../lib/bridge";
-
-  // Подключение делает экран «в сети» главным; разрыв возвращает на вход.
-  // Экран настроек переключается отдельным стором.
-  $effect(() => {
-    if ($status.phase === "connected" || $status.phase === "reconnecting") {
-      if ($screen === "login") screen.set("connected");
-    } else if ($status.phase === "disconnected" || $status.phase === "error") {
-      if ($screen === "connected") screen.set("login");
-    }
-  });
+  import { startEventBridge, stopEventBridge, loadSettings } from "../lib/bridge";
+  import { loadRooms } from "../lib/stores";
 
   onMount(() => {
     initTheme();
-    restoreLogin();
+    loadRooms();
     loadSettings();
     startEventBridge();
     return () => stopEventBridge();
@@ -41,10 +26,8 @@
   <main class="stage">
     {#if $screen === "settings"}
       <SettingsScreen />
-    {:else if $screen === "connected"}
-      <ConnectedScreen />
     {:else}
-      <LoginScreen />
+      <RoomsScreen />
     {/if}
   </main>
 </div>

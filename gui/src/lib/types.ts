@@ -18,6 +18,16 @@ export interface Peer {
   pingMs?: number | null;
 }
 
+/** Сохранённая комната (сеть) — Radmin-стиль: список, активна одна за раз. */
+export interface Room {
+  /** Стабильный локальный id (ключ списка), не зависит от имени. */
+  id: string;
+  /** Имя сети — доменный разделитель в KDF, видно как «название комнаты». */
+  name: string;
+  /** Пароль сети (хранится локально, как чекбокс «Запомнить»). */
+  password: string;
+}
+
 /** Жизненный цикл подключения — как приходит в событии `status`. */
 export type ConnectionPhase =
   | "disconnected"
@@ -32,6 +42,8 @@ export interface ConnectionStatus {
   network?: string;
   /** Свой overlay-IP (без префикса), напр. 10.66.0.1. */
   overlayIp?: string;
+  /** Имя этого узла (hostname) — для карточки «себя». */
+  selfName?: string;
   /** Человеческий текст ошибки (только при phase === "error"). */
   error?: AppError | null;
 }

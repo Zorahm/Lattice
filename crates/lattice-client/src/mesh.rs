@@ -24,7 +24,7 @@
 //! отображения и детекта коллизий. `peer-id` — генерируется локально
 //! (`hostname-pid`), сервер адресует по нему апдейты.
 
-use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -209,6 +209,10 @@ pub struct MeshEstablished {
     /// peer-id пиров сети по endpoint — для PunchOk/PunchFailed отчётов и
     /// для идентификации пришедших в `PeerJoined`.
     pub peer_ids: Arc<RwLock<Vec<(PeerId, SocketAddr, OverlayIp)>>>,
+    /// Наш публичный IP (из srflx). Пир с тем же публичным IP сидит за тем же
+    /// NAT → прямой путь = hairpin (большинство роутеров не умеют) → relay.
+    /// Используется сессией для решения по пирам, пришедшим уже после establish.
+    pub self_public_ip: Option<IpAddr>,
 }
 
 /// Прогнать STUN → `Hello` → `Welcome` → punch-per-peer. Возвращает решение +
@@ -227,6 +231,8 @@ pub fn establish(
     // 1. STUN на датаплейн-сокете (тот же маппинг, что увидят пиры).
     let (srflx, nat) = discover_srflx(transport, params);
     log::info!("mesh: local srflx {srflx}, NAT {nat:?}");
+    // Наш публичный IP — для детекта пиров за тем же NAT (hairpin → relay).
+    let self_public_ip: Option<IpAddr> = srflx.parse::<SocketAddr>().ok().map(|s| s.ip());
 
     // 2. Подключаемся к coordination-серверу и шлём Hello.
     let signaling = MeshSignaling::connect(&params.rendezvous, params.connect_timeout)?;
@@ -274,6 +280,22 @@ pub fn establish(
         peer_ids.push((p.peer_id.clone(), peer_addr, p.overlay_ip.clone()));
         if shutdown.load(Ordering::Acquire) {
             return Err(MeshError::Aborted);
+        }
+        // Тот же публичный IP, что у нас → пир за нашим же NAT. Прямой путь к
+        // его srflx — hairpin, который большинство домашних роутеров не умеют;
+        // не тратим 5с на заведомо дохлый punch, сразу relay (бинарная модель:
+        // any_failed → вся сеть через relay, что и совпадёт с решением пира).
+        if self_public_ip.is_some() && Some(peer_addr.ip()) == self_public_ip {
+            log::info!(
+                "mesh: peer {} shares our public IP {} (same NAT, hairpin); relay",
+                p.peer_id.as_str(),
+                peer_addr.ip()
+            );
+            any_failed = true;
+            let _ = signaling.send(&MeshClientMessage::PunchFailed {
+                peer_id: p.peer_id.clone(),
+            });
+            continue;
         }
         match punch::punch(transport.socket(), crypto, peer_addr, &params.punch, shutdown) {
             Ok(addr) => {
@@ -329,6 +351,7 @@ pub fn establish(
         signaling,
         relay_session: welcome.session,
         peer_ids: Arc::new(RwLock::new(peer_ids)),
+        self_public_ip,
     })
 }
 
