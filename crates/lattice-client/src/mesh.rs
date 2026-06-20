@@ -24,7 +24,7 @@
 //! отображения и детекта коллизий. `peer-id` — генерируется локально
 //! (`hostname-pid`), сервер адресует по нему апдейты.
 
-use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, TcpStream, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -231,8 +231,14 @@ pub fn establish(
     // 1. STUN на датаплейн-сокете (тот же маппинг, что увидят пиры).
     let (srflx, nat) = discover_srflx(transport, params);
     log::info!("mesh: local srflx {srflx}, NAT {nat:?}");
-    // Наш публичный IP — для детекта пиров за тем же NAT (hairpin → relay).
+    // Наш публичный IP — для детекта пиров за тем же NAT.
     let self_public_ip: Option<IpAddr> = srflx.parse::<SocketAddr>().ok().map(|s| s.ip());
+    // Наш LAN-local адрес (тот же порт датаплейн-сокета) — чтобы пир за тем же
+    // публичным IP коннектился к нам напрямую по локальной сети, а не через relay.
+    let local_addr = local_endpoint(transport);
+    if let Some(la) = &local_addr {
+        log::info!("mesh: local LAN endpoint {la}");
+    }
 
     // 2. Подключаемся к coordination-серверу и шлём Hello.
     let signaling = MeshSignaling::connect(&params.rendezvous, params.connect_timeout)?;
@@ -243,6 +249,7 @@ pub fn establish(
         overlay_ip: params.overlay_ip.clone(),
         srflx: srflx.clone(),
         nat,
+        local_addr,
     })?;
     log::info!(
         "mesh: Hello sent (network {}, peer {}, overlay {})",
@@ -277,27 +284,22 @@ pub fn establish(
                 continue;
             }
         };
-        peer_ids.push((p.peer_id.clone(), peer_addr, p.overlay_ip.clone()));
+        // Цель punch: если пир за тем же публичным IP (тот же NAT) и анонсировал
+        // LAN-адрес — бьём в его локальный адрес (прямой путь по LAN, без relay и
+        // без бесполезного hairpin к публичному srflx). Иначе — публичный srflx.
+        let target = lan_target(p, self_public_ip).unwrap_or(peer_addr);
+        if target != peer_addr {
+            log::info!(
+                "mesh: peer {} за тем же NAT — пробую LAN-адрес {target}",
+                p.peer_id.as_str()
+            );
+        }
+        // peer_ids держит ЦЕЛЬ (LAN или публичный) — туда же шлёт датаплейн.
+        peer_ids.push((p.peer_id.clone(), target, p.overlay_ip.clone()));
         if shutdown.load(Ordering::Acquire) {
             return Err(MeshError::Aborted);
         }
-        // Тот же публичный IP, что у нас → пир за нашим же NAT. Прямой путь к
-        // его srflx — hairpin, который большинство домашних роутеров не умеют;
-        // не тратим 5с на заведомо дохлый punch, сразу relay (бинарная модель:
-        // any_failed → вся сеть через relay, что и совпадёт с решением пира).
-        if self_public_ip.is_some() && Some(peer_addr.ip()) == self_public_ip {
-            log::info!(
-                "mesh: peer {} shares our public IP {} (same NAT, hairpin); relay",
-                p.peer_id.as_str(),
-                peer_addr.ip()
-            );
-            any_failed = true;
-            let _ = signaling.send(&MeshClientMessage::PunchFailed {
-                peer_id: p.peer_id.clone(),
-            });
-            continue;
-        }
-        match punch::punch(transport.socket(), crypto, peer_addr, &params.punch, shutdown) {
+        match punch::punch(transport.socket(), crypto, target, &params.punch, shutdown) {
             Ok(addr) => {
                 log::info!("mesh: punch to {} ok -> {}", p.peer_id.as_str(), addr);
                 direct_peers.push(addr);
@@ -353,6 +355,40 @@ pub fn establish(
         peer_ids: Arc::new(RwLock::new(peer_ids)),
         self_public_ip,
     })
+}
+
+/// LAN-local endpoint нашего датаплейн-сокета: `<lan-ip>:<port>`. Порт — реальный
+/// порт сокета; IP — адрес исходящего интерфейса (трюк с `connect` UDP к внешнему
+/// адресу: пакеты не шлются, ядро лишь выбирает source-IP по таблице маршрутов).
+/// `None`, если порт/IP определить не удалось или адрес неюзабельный (loopback/
+/// unspecified). Нужен пиру за тем же публичным IP для прямого LAN-коннекта.
+fn local_endpoint(transport: &UdpTransport) -> Option<String> {
+    let port = transport.socket().local_addr().ok()?.port();
+    // connect к публичному IP (любому) → ядро проставит local source-IP интерфейса
+    // с дефолтным маршрутом = наш LAN-адрес за NAT. Датаграммы не отправляются.
+    let probe = UdpSocket::bind("0.0.0.0:0").ok()?;
+    let ip = probe
+        .connect("8.8.8.8:80")
+        .and_then(|()| probe.local_addr())
+        .map(|a| a.ip())
+        .ok()?;
+    if ip.is_unspecified() || ip.is_loopback() {
+        return None;
+    }
+    Some(SocketAddr::new(ip, port).to_string())
+}
+
+/// Цель прямого коннекта к пиру `info` ПО LAN, если он за тем же публичным IP, что
+/// и мы, и анонсировал локальный адрес. `None` — другой NAT (тогда цель = srflx)
+/// либо LAN-адрес не задан/битый. Сравнение по IP (не порту): один внешний IP =
+/// один NAT.
+pub(crate) fn lan_target(info: &PeerInfo, self_public_ip: Option<IpAddr>) -> Option<SocketAddr> {
+    let self_ip = self_public_ip?;
+    let srflx: SocketAddr = info.srflx.parse().ok()?;
+    if srflx.ip() != self_ip {
+        return None; // другой публичный IP → не один NAT, LAN-путь не применим.
+    }
+    info.local_addr.as_deref()?.parse().ok()
 }
 
 /// STUN с деградацией (как `dynamic::discover_srflx`, но для mesh).

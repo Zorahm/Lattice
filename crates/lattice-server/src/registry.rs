@@ -58,6 +58,9 @@ pub struct JoinRequest {
     pub overlay_ip: OverlayIp,
     pub srflx: String,
     pub nat: NatType,
+    /// LAN-local endpoint пира (`ip:port`) из `Hello` — для прямого пути между
+    /// пирами за одним публичным IP. Прозрачно ретранслируется в `PeerInfo`.
+    pub local_addr: Option<String>,
     /// TCP source-адрес control-соединения — для `WebUI` (диагностика).
     pub control_addr: SocketAddr,
     pub tx: Sender<MeshServerMessage>,
@@ -71,6 +74,8 @@ pub struct PeerEntry {
     pub overlay_ip: OverlayIp,
     pub srflx: String,
     pub nat: NatType,
+    /// LAN-local endpoint пира (`ip:port`) — ретранслируется в `PeerInfo`.
+    pub local_addr: Option<String>,
     /// TCP source-адрес control-соединения — для `WebUI` (диагностика).
     pub control_addr: SocketAddr,
     pub last_seen: Instant,
@@ -89,6 +94,7 @@ impl PeerEntry {
             overlay_ip: self.overlay_ip.clone(),
             srflx: self.srflx.clone(),
             nat: self.nat,
+            local_addr: self.local_addr.clone(),
             link,
         }
     }
@@ -252,6 +258,7 @@ impl Registry for InMemoryRegistry {
             overlay_ip,
             srflx,
             nat,
+            local_addr,
             control_addr,
             tx,
         } = req;
@@ -293,6 +300,7 @@ impl Registry for InMemoryRegistry {
                 existing.overlay_ip = overlay_ip;
                 existing.srflx = srflx;
                 existing.nat = nat;
+                existing.local_addr = local_addr;
                 existing.control_addr = control_addr;
                 existing.tx = tx;
                 existing.last_seen = Instant::now();
@@ -327,6 +335,7 @@ impl Registry for InMemoryRegistry {
             overlay_ip: overlay_ip.clone(),
             srflx: srflx.clone(),
             nat,
+            local_addr,
             control_addr,
             last_seen: Instant::now(),
             missed_heartbeats: 0,

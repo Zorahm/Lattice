@@ -29,6 +29,12 @@ pub enum MeshClientMessage {
         overlay_ip: OverlayIp,
         srflx: String,
         nat: NatType,
+        /// LAN-local endpoint `ip:port` (адрес дата­плейн-сокета в локальной
+        /// сети, напр. `192.168.1.5:49171`). Пир за тем же публичным IP коннектится
+        /// сюда напрямую по LAN вместо relay через сервер. `None` — не удалось
+        /// определить локальный адрес. `#[serde(default)]` — терпимо к старым клиентам.
+        #[serde(default)]
+        local_addr: Option<String>,
     },
     /// Heartbeat: «я ещё жив». Сервер обновляет `last_seen` и не выкидывает пира
     /// при разовой потере (помечает offline только после 3 пропусков ~45с).
@@ -85,6 +91,11 @@ pub struct PeerInfo {
     /// Внешний endpoint `ip:port` (srflx из STUN) — куда слать punch / данные.
     pub srflx: String,
     pub nat: NatType,
+    /// LAN-local endpoint `ip:port` пира (из его `Hello`). Если у этого пира тот
+    /// же публичный IP, что у нас, коннектимся сюда напрямую по локальной сети —
+    /// прямой путь без relay. `None` у пиров со старым клиентом / без LAN-адреса.
+    #[serde(default)]
+    pub local_addr: Option<String>,
     /// Per-pair link-статус известен только из отчётов клиента (`PunchOk`/
     /// `PunchFailed`); для свежезарегистрированного пира — `Unknown`.
     pub link: LinkKind,

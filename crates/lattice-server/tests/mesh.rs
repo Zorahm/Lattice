@@ -62,6 +62,7 @@ fn mesh_connect(control: &str, peer: &str, overlay: &str, srflx: &str) -> TcpStr
         overlay_ip: OverlayIp::new(overlay.to_string()),
         srflx: srflx.to_string(),
         nat: lattice_proto::NatType::EndpointIndependent,
+        local_addr: None,
     };
     send(&mut s, &hello);
     s
@@ -149,6 +150,7 @@ fn mesh_version_mismatch_rejected() {
             overlay_ip: OverlayIp::new("10.66.0.9".to_string()),
             srflx: "1.1.1.1:1".to_string(),
             nat: lattice_proto::NatType::Unknown,
+            local_addr: None,
         },
     );
     assert!(matches!(recv(&mut s), MeshServerMessage::Error { .. }));

@@ -30,6 +30,7 @@ use crate::crypto::Crypto;
 use crate::dynamic::Established;
 use crate::mesh::MeshSignalRecv;
 use crate::mesh::MeshSignaling;
+use crate::mesh::lan_target;
 use crate::punch::{self, CtrlKind};
 use crate::session::net_to_tap;
 use crate::transport::obfs::JitterPolicy;
@@ -119,7 +120,7 @@ pub fn run<T: Transport + Sync>(ctx: &MeshSessionCtx<'_, T>) -> MeshSessionEnd {
             );
         });
         s.spawn(|| {
-            watchdog(established, &last_recv, start, shutdown, &stop, &reason);
+            watchdog(established, peers, &last_recv, start, shutdown, &stop, &reason);
         });
     });
 
@@ -321,17 +322,19 @@ fn control_watch(
         match signaling.recv(Duration::from_millis(500)) {
             MeshSignalRecv::Message(MeshServerMessage::PeerJoined(info)) => {
                 // Direct: добавляем endpoint в broadcast-список (без re-establish).
+                // Пир за тем же NAT → его LAN-адрес (прямой путь по локалке), иначе
+                // публичный srflx. Re-establish из-за same-NAT больше НЕ делаем —
+                // именно он раньше вызывал флап (storm переподключений).
                 // Relay: relay сам пересылает всем — ничего не делаем.
                 if matches!(established, Established::Direct { .. }) {
-                    if peer_shares_our_ip(&info, self_public_ip) {
-                        log::info!(
-                            "mesh: joined peer {} behind our NAT (hairpin); re-establishing to relay",
-                            info.peer_id.as_str()
-                        );
-                        signal_end(reason, stop, MeshSessionEnd::LinkDead);
-                        return;
+                    match direct_target(&info, self_public_ip) {
+                        Some(addr) => upsert_direct_peer(peers, peer_ids, &info, addr),
+                        None => log::warn!(
+                            "mesh: peer {} has bad srflx '{}'; skipped",
+                            info.peer_id.as_str(),
+                            info.srflx
+                        ),
                     }
-                    upsert_direct_peer(peers, peer_ids, &info);
                 } else {
                     log::info!("mesh: peer {} joined (relay routes; no-op)", info.peer_id.as_str());
                 }
@@ -345,15 +348,14 @@ fn control_watch(
             }
             MeshSignalRecv::Message(MeshServerMessage::PeerUpdated(info)) => {
                 if matches!(established, Established::Direct { .. }) {
-                    if peer_shares_our_ip(&info, self_public_ip) {
-                        log::info!(
-                            "mesh: updated peer {} behind our NAT (hairpin); re-establishing to relay",
-                            info.peer_id.as_str()
-                        );
-                        signal_end(reason, stop, MeshSessionEnd::LinkDead);
-                        return;
+                    match direct_target(&info, self_public_ip) {
+                        Some(addr) => upsert_direct_peer(peers, peer_ids, &info, addr),
+                        None => log::warn!(
+                            "mesh: peer {} has bad srflx '{}'; skipped",
+                            info.peer_id.as_str(),
+                            info.srflx
+                        ),
                     }
-                    upsert_direct_peer(peers, peer_ids, &info);
                 } else {
                     log::info!("mesh: peer {} updated (relay routes; no-op)", info.peer_id.as_str());
                 }
@@ -384,29 +386,23 @@ fn control_watch(
     }
 }
 
-/// Сидит ли пир за тем же публичным IP, что и мы (→ direct = hairpin). Сравнение
-/// по IP, не по порту: один внешний IP = один NAT. `None`/битый srflx → `false`
-/// (не блокируем добавление из-за неразобранного адреса).
-fn peer_shares_our_ip(info: &PeerInfo, self_ip: Option<IpAddr>) -> bool {
-    match (self_ip, info.srflx.parse::<SocketAddr>()) {
-        (Some(ip), Ok(addr)) => addr.ip() == ip,
-        _ => false,
-    }
+/// Адрес для прямого коннекта к пиру: LAN-адрес, если он за тем же NAT, иначе
+/// публичный srflx. `None` — оба адреса не разобрались (битый пир). Сравнение
+/// NAT — по публичному IP (см. `mesh::lan_target`).
+fn direct_target(info: &PeerInfo, self_ip: Option<IpAddr>) -> Option<SocketAddr> {
+    lan_target(info, self_ip).or_else(|| info.srflx.parse().ok())
 }
 
 /// Добавить (или обновить endpoint) direct-пира в broadcast-список и реестр id.
-/// Идемпотентно: повторный `PeerJoined` того же пира лишь обновит адрес. Адрес —
-/// анонсированный srflx пира; для cone-NAT датаплейн сам пробьёт путь встречным
-/// трафиком (см. док `control_watch`).
+/// Идемпотентно: повторный `PeerJoined` того же пира лишь обновит адрес. `addr` —
+/// уже выбранная цель (LAN или публичный srflx, см. `direct_target`); для cone-NAT
+/// и пиров за одним NAT датаплейн сам пробьёт путь встречным трафиком.
 fn upsert_direct_peer(
     peers: &Arc<RwLock<Vec<SocketAddr>>>,
     peer_ids: &Arc<RwLock<Vec<(PeerId, SocketAddr, OverlayIp)>>>,
     info: &PeerInfo,
+    addr: SocketAddr,
 ) {
-    let Ok(addr) = info.srflx.parse::<SocketAddr>() else {
-        log::warn!("mesh: peer {} has bad srflx '{}'; skipped", info.peer_id.as_str(), info.srflx);
-        return;
-    };
     if let Ok(mut ids) = peer_ids.write() {
         if let Some(entry) = ids.iter_mut().find(|(id, _, _)| *id == info.peer_id) {
             entry.1 = addr;
@@ -451,8 +447,16 @@ fn remove_direct_peer(
 
 /// Watchdog direct-пути: тишина > 60с (~3×keepalive) → `LinkDead` (re-establish).
 /// В relay-режиме не активен — relay-путь рвётся через control (`ControlLost`).
+///
+/// Молчание считаем ТОЛЬКО когда в сети есть хотя бы один пир: одинокий пир
+/// данных не получает по определению, и без этой проверки watchdog рвал бы его
+/// сессию каждые 60с — самоиндуцированный флап (network create/emptied в логах
+/// сервера). Отсчёт тишины ведём от момента, когда пиры появились (или от
+/// последнего принятого пакета, если он свежее) — чтобы только что вошедшему
+/// пиру давался полный таймаут, а не мгновенный разрыв из-за старого `last_recv`.
 fn watchdog(
     established: &Established,
+    peers: &Arc<RwLock<Vec<SocketAddr>>>,
     last_recv: &AtomicU64,
     start: Instant,
     shutdown: &AtomicBool,
@@ -463,15 +467,24 @@ fn watchdog(
         return; // relay — не watchdog'им.
     }
     let dead_after = Duration::from_secs(60);
+    let mut active_since: Option<u64> = None; // elapsed_ms, когда появились пиры.
     loop {
         if stopped(shutdown, stop) {
             return;
         }
-        let silent = elapsed_ms(start).saturating_sub(last_recv.load(Ordering::Acquire));
-        if Duration::from_millis(silent) > dead_after {
-            log::warn!("mesh: direct link silent for {silent}ms; re-establishing");
-            signal_end(reason, stop, MeshSessionEnd::LinkDead);
-            return;
+        let now = elapsed_ms(start);
+        let has_peers = peers.read().is_ok_and(|p| !p.is_empty());
+        if has_peers {
+            let base = active_since.get_or_insert(now);
+            let baseline = (*base).max(last_recv.load(Ordering::Acquire));
+            let silent = now.saturating_sub(baseline);
+            if Duration::from_millis(silent) > dead_after {
+                log::warn!("mesh: direct link silent for {silent}ms; re-establishing");
+                signal_end(reason, stop, MeshSessionEnd::LinkDead);
+                return;
+            }
+        } else {
+            active_since = None; // одни — отсчёт тишины не ведём.
         }
         thread::sleep(Duration::from_millis(500));
     }

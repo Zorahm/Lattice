@@ -88,6 +88,7 @@ fn parse_hello(
             overlay_ip,
             srflx,
             nat,
+            local_addr,
         }) => {
             if protocol_version != PROTOCOL_VERSION {
                 let _ = tx.send(MeshServerMessage::Error {
@@ -111,6 +112,7 @@ fn parse_hello(
                 overlay_ip,
                 srflx,
                 nat,
+                local_addr,
             })
         }
         Ok(other) => {
@@ -134,6 +136,7 @@ struct HelloData {
     overlay_ip: OverlayIp,
     srflx: String,
     nat: NatType,
+    local_addr: Option<String>,
 }
 
 /// Reader-цикл: `Hello` → `join` → сессия (heartbeat/punch-отчёты/`Bye`).
@@ -154,6 +157,7 @@ fn reader_loop<R: Registry>(
         overlay_ip,
         srflx,
         nat,
+        local_addr,
     } = hello;
 
     let welcome = match registry.join(JoinRequest {
@@ -162,6 +166,7 @@ fn reader_loop<R: Registry>(
         overlay_ip: overlay_ip.clone(),
         srflx: srflx.clone(),
         nat,
+        local_addr,
         control_addr: peer,
         tx: tx.clone(),
     }) {

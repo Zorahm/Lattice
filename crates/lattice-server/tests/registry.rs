@@ -54,6 +54,7 @@ fn join(
             overlay_ip,
             srflx: srflx.to_string(),
             nat: NatType::EndpointIndependent,
+            local_addr: None,
             control_addr: ctrl_addr(),
             tx,
         })
@@ -99,6 +100,7 @@ fn overlay_ip_collision_rejected() {
             overlay_ip: overlay("10.66.0.5"), // та же
             srflx: "2.2.2.2:2".to_string(),
             nat: NatType::Unknown,
+            local_addr: None,
             control_addr: ctrl_addr(),
             tx: tx_b,
         })

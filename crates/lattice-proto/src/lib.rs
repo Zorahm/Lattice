@@ -41,8 +41,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// История: 1 — Фаза 1 (плейсхолдер); 2 — Фаза 2 (room rendezvous); 3 — Фаза 3
 /// (mesh-сообщения, отдельный набор от room-протокола, обе ветки на одном
-/// листенере).
-pub const PROTOCOL_VERSION: u32 = 3;
+/// листенере); 4 — LAN-local кандидат (`local_addr` в `Hello`/`PeerInfo`) для
+/// прямого пути между пирами за одним NAT.
+pub const PROTOCOL_VERSION: u32 = 4;
 
 /// Описание пира, которым обмениваются клиент и coordination-сервер (Фаза 3).
 /// Endpoint хранится строкой, чтобы не тащить платформенно-зависимый
