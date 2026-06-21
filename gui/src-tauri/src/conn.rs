@@ -280,6 +280,14 @@ fn run(
     if let Err(e) = netcfg::configure_interface(&tap.info.name, ip, prefix, settings.network.mtu) {
         return emit_error(app, network, "unknown", format!("настройка адаптера: {e}"));
     }
+    // Переустановить media-connected ПОСЛЕ netsh: смена MTU перезапускает
+    // NDIS-минипорт tap-windows6, рестарт (возможно асинхронный) сбрасывает
+    // media-status в disconnected. Серия повторов перекрывает окно рестарта —
+    // иначе один конец mesh остаётся с дохлым линком (нет on-link маршрута,
+    // ARP не уходит): отсюда асимметрия «я его пингую, он меня нет».
+    if let Err(e) = tap.reassert_media_connected() {
+        return emit_error(app, network, "unknown", format!("media status адаптера: {e}"));
+    }
 
     // 5. Bind UDP.
     let listen: SocketAddr = format!("0.0.0.0:{}", settings.connection.listen_port)
@@ -399,6 +407,16 @@ fn run(
                                 network,
                                 "unknown",
                                 format!("настройка адаптера: {e}"),
+                            );
+                        }
+                        // netsh снова сменил MTU → минипорт рестартанул → media
+                        // сбросился в disconnected; переустанавливаем (см. шаг 4).
+                        if let Err(e) = tap.reassert_media_connected() {
+                            return emit_error(
+                                app,
+                                network,
+                                "unknown",
+                                format!("media status адаптера: {e}"),
                             );
                         }
                         self_overlay = nip.to_string();

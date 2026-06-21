@@ -73,6 +73,17 @@ fn main() -> ExitCode {
     }
     log::info!("configured {} with {}/{} MTU={mtu}", tap.info.name, setup.ip, setup.prefix_len);
 
+    // Переустановить media-connected ПОСЛЕ netsh. Смена MTU (`set subinterface`)
+    // перезапускает NDIS-минипорт tap-windows6, а рестарт сбрасывает media-status
+    // в дефолт (disconnected). Без повторного IOCTL Windows держит адаптер
+    // «кабель выдернут»: прячет on-link маршрут, не пишет кадры в адаптер, на
+    // пинг overlay-подсети отвечает unreachable без ARP. См. tap::set_media_status.
+    if let Err(e) = tap.reassert_media_connected() {
+        eprintln!("error: re-asserting TAP media status failed: {e}");
+        return ExitCode::from(4);
+    }
+    log::info!("TAP media re-asserted connected after IP/MTU config");
+
     // Фаза 4: лог плана транспорта + fail-fast валидация QUIC-конфига (--sni).
     if let Err(e) = run::announce_transport(&setup.transport) {
         eprintln!("error: {e}");

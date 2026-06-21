@@ -184,6 +184,35 @@ impl TapDevice {
         Ok(())
     }
 
+    /// Повторно поднять media-connected ПОСЛЕ внешней реконфигурации адаптера
+    /// (`netsh set address` / `set subinterface mtu`). Смена MTU перезапускает
+    /// NDIS-минипорт tap-windows6, а рестарт сбрасывает media-status в дефолт
+    /// (disconnected). Рестарт может прийти асинхронно — через десятки/сотни мс
+    /// после возврата `netsh`, уже ПОСЛЕ одиночного `set_media_status(true)`.
+    /// Поэтому дёргаем IOCTL несколько раз с паузами, перекрывая окно рестарта;
+    /// IOCTL идемпотентен, лишние вызовы безвредны. Без этого один конец mesh мог
+    /// остаться с дохлым линком (нет on-link маршрута, ARP не уходит) — отсюда
+    /// асимметрия «я его пингую, он меня нет».
+    ///
+    /// # Errors
+    ///
+    /// `Ioctl` — `DeviceIoControl(SET_MEDIA_STATUS)` вернул ошибку.
+    #[cfg(windows)]
+    pub fn reassert_media_connected(&self) -> Result<(), TapError> {
+        for i in 0..6 {
+            self.set_media_status(true)?;
+            if i < 5 {
+                std::thread::sleep(std::time::Duration::from_millis(250));
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(not(windows))]
+    pub fn reassert_media_connected(&self) -> Result<(), TapError> {
+        Ok(())
+    }
+
     /// Прочитать один Ethernet-фрейм (overlapped, с таймаутом). `buf` ≥
     /// `FRAME_BUF_LEN`. Возвращает `Err(TapError::WouldBlock)` по таймауту —
     /// цикл чтения использует это чтобы переодически проверять флаг shutdown,
